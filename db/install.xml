@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<XMLDB PATH="local/h5plogger/db" VERSION="20240101" COMMENT="H5P interaction logger">
+  <TABLES>
+    <TABLE NAME="local_h5plogger_log" COMMENT="H5P xAPI interaction log">
+      <FIELDS>
+        <FIELD NAME="id"          TYPE="int"  LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="userid"         TYPE="int"  LENGTH="10" NOTNULL="true"  COMMENT="Moodle user id"/>
+        <FIELD NAME="cmid"           TYPE="int"  LENGTH="10" NOTNULL="false" COMMENT="Course module id (from URL ?id=)"/>
+        <FIELD NAME="h5p_id"         TYPE="int"  LENGTH="10" NOTNULL="false" COMMENT="mdl_h5p.id (xAPI h5p-local-content-id)"/>
+        <FIELD NAME="h5pactivity_id" TYPE="int"  LENGTH="10" NOTNULL="false" COMMENT="mdl_h5pactivity.id"/>
+        <FIELD NAME="attempt_id"     TYPE="int"  LENGTH="10" NOTNULL="false" COMMENT="mdl_h5pactivity_attempts.id"/>
+        <FIELD NAME="verb"           TYPE="char" LENGTH="64" NOTNULL="true"  COMMENT="xAPI verb (progressed/answered/etc)"/>
+        <FIELD NAME="slide_from"     TYPE="int"  LENGTH="10" NOTNULL="false" COMMENT="Slide number before transition (progressed only)"/>
+        <FIELD NAME="slide_to"       TYPE="int"  LENGTH="10" NOTNULL="false" COMMENT="Current slide number"/>
+        <FIELD NAME="extra"          TYPE="text" NOTNULL="false"             COMMENT="JSON: verb-specific detail (answer, score, etc)"/>
+        <FIELD NAME="timecreated"    TYPE="int"  LENGTH="10" NOTNULL="true"  COMMENT="Unix timestamp"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="userid"         UNIQUE="false" FIELDS="userid"/>
+        <INDEX NAME="cmid"           UNIQUE="false" FIELDS="cmid"/>
+        <INDEX NAME="h5p_id"         UNIQUE="false" FIELDS="h5p_id"/>
+        <INDEX NAME="attempt_id"     UNIQUE="false" FIELDS="attempt_id"/>
+        <INDEX NAME="timecreated"    UNIQUE="false" FIELDS="timecreated"/>
+      </INDEXES>
+    </TABLE>
+  </TABLES>
+</XMLDB>
