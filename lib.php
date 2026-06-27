@@ -249,17 +249,31 @@ function local_h5plogger_before_footer() {
 
                 var clickExtra = {
                     label:     el.getAttribute('aria-label') || null,
-                    text:      (el.textContent || '').trim().slice(0, 100) || null,
                     direction: direction,
                 };
                 if ({$save_classes}) {
                     clickExtra.classes = el.className || null;
                 }
+                Object.assign(clickExtra, posExtra);
+
+                // aria-haspopupがある場合、ポップアップが開いた後にテキストを補完して送信
+                // ポップアップは内側iframeのDOMに追加されるため ownerDocument で探す
+                if (el.getAttribute('aria-haspopup')) {
+                    var doc = e.target.ownerDocument;
+                    setTimeout(function() {
+                        var popup = doc.querySelector('.h5p-popup-overlay, .h5p-dialog-interaction');
+                        clickExtra.popup_text = popup
+                            ? (popup.textContent.trim().replace(/\s+/g, ' ').slice(0, 300) || null)
+                            : null;
+                        sendLog({ h5p_id: null, verb: matched.verb, extra: JSON.stringify(clickExtra) });
+                    }, 300);
+                    return;
+                }
 
                 sendLog({
                     h5p_id: null,
                     verb:   matched.verb,
-                    extra:  JSON.stringify(Object.assign(clickExtra, posExtra)),
+                    extra:  JSON.stringify(clickExtra),
                 });
             }
 
@@ -273,22 +287,65 @@ function local_h5plogger_before_footer() {
                 }
             }
 
-            // ---- 動画（YouTube）postMessage監視 ----
-            // YouTubeのpostMessageはh5p-iframe-Nに届く（YouTube iframeの直接の親）。
+            // ---- 動画（YouTube / Vimeo）postMessage監視 ----
+            // postMessageはh5p-iframe-Nに届く（動画iframeの直接の親）。
             // innerWin = h5p-iframe-N のwindowに対してlistenerを張る。
             function attachVideoListener(innerWin) {
                 // lastVideoTime は外側スコープ（attachH5PListener）で宣言済み。
                 // clickHandler からも参照できるよう、ここでは更新のみ行う。
                 var seekDebounce = null;
-                var playerState  = -1;
+                var playerState  = -1; // YouTube: 1=playing, 2=paused
+                var vimeoState   = -1; // Vimeo:   1=playing, 2=paused
 
                 innerWin.addEventListener('message', function(e) {
                     var data;
                     try {
                         data = (typeof e.data === 'string') ? JSON.parse(e.data) : e.data;
                     } catch(ex) { return; }
-                    // YouTube IFrame APIのメッセージのみ処理（channel: "widget"で判定）
-                    if (!data || !data.event || data.channel !== 'widget') return;
+                    if (!data) return;
+
+                    // ── Vimeo Player API (origin: player.vimeo.com) ──────────────
+                    if (e.origin === 'https://player.vimeo.com' && data.event) {
+                        if (data.event === 'play') {
+                            if (vimeoState !== 1) {
+                                vimeoState = 1;
+                                // data.data.seconds があればそちらが正確
+                                var pt = (data.data && data.data.seconds !== undefined)
+                                         ? data.data.seconds : lastVideoTime;
+                                if (pt !== null) lastVideoTime = pt;
+                                sendLog({ h5p_id: null, verb: 'video_played',
+                                          extra: JSON.stringify({ timecode: lastVideoTime }) });
+                            }
+                        } else if (data.event === 'pause') {
+                            if (vimeoState !== 2) {
+                                vimeoState = 2;
+                                var pt2 = (data.data && data.data.seconds !== undefined)
+                                          ? data.data.seconds : lastVideoTime;
+                                if (pt2 !== null) lastVideoTime = pt2;
+                                sendLog({ h5p_id: null, verb: 'video_paused',
+                                          extra: JSON.stringify({ timecode: lastVideoTime }) });
+                            }
+                        } else if (data.event === 'timeupdate' && data.data) {
+                            var vct = data.data.seconds;
+                            if (vct !== undefined && vct !== null) {
+                                if (lastVideoTime !== null && Math.abs(vct - lastVideoTime) > 2) {
+                                    // シーク検出：2秒以上の不連続ジャンプ
+                                    var vfrom = lastVideoTime;
+                                    var vto   = vct;
+                                    if (seekDebounce) clearTimeout(seekDebounce);
+                                    seekDebounce = setTimeout(function() {
+                                        sendLog({ h5p_id: null, verb: 'video_seeked',
+                                                  extra: JSON.stringify({ from: vfrom, to: vto }) });
+                                    }, 500);
+                                }
+                                lastVideoTime = vct;
+                            }
+                        }
+                        return;
+                    }
+
+                    // ── YouTube IFrame API (channel: 'widget') ───────────────────
+                    if (!data.event || data.channel !== 'widget') return;
 
                     if (data.event === 'onStateChange') {
                         var newState = parseInt(data.info);
@@ -329,25 +386,31 @@ function local_h5plogger_before_footer() {
             function attachInner(outerWin, tries) {
                 tries = tries || 0;
                 var inner = null;
-                try {
-                    var innerFrames = outerWin.document.querySelectorAll('iframe');
-                    for (var i = 0; i < innerFrames.length; i++) {
+
+                // ループ外でquerySelectorAllを試みる（outerWin自体がクロスオリジンの場合に備え）
+                var innerFrames = [];
+                try { innerFrames = outerWin.document.querySelectorAll('iframe'); } catch(e) {}
+
+                // iframe毎に個別にtry/catch（クロスオリジンiframeで全体が止まるのを防ぐ）
+                // about:blank は未ロード状態なのでスキップ（ナビゲート後に別windowになりリスナーが消える）
+                for (var i = 0; i < innerFrames.length; i++) {
+                    try {
                         var w = innerFrames[i].contentWindow;
-                        if (w && w.document) { inner = w; break; }
-                    }
-                } catch (e) {
-                    // クロスオリジン等。同一オリジン前提なので通常来ない。
+                        if (w && w.document && w.location.href !== 'about:blank') { inner = w; break; }
+                    } catch(e) { /* クロスオリジン、スキップ */ }
                 }
 
-                if (inner && attachClickTo(inner)) {
-                    attachVideoListener(inner); // 動画postMessageもここで張る
+                if (inner) {
+                    attachClickTo(inner);
+                    attachVideoListener(inner);
                     return;
                 }
                 if (tries < 20) {
                     setTimeout(function () { attachInner(outerWin, tries + 1); }, 300);
                 } else {
-                    // 最終フォールバック：内側が見つからない構成なら外側に張る（保険）
+                    // 最終フォールバック：内側が見つからない構成（IVのYouTubeがクロスオリジン等）
                     attachClickTo(outerWin);
+                    attachVideoListener(outerWin);
                 }
             }
 
