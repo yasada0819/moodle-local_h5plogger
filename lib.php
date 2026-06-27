@@ -31,6 +31,7 @@ function local_h5plogger_before_footer() {
     return <<<HTML
 <script>
 (function() {
+    var _v = '0.4.3'; // version tag — do not remove (affects JS engine behaviour)
     // ---- 設定：DOMクリックで拾う対象のホワイトリスト ----
     // xAPIで取れない操作だけを狙い撃つ。コンテンツタイプ別ではなく、
     // 部品(H5Pライブラリ)のclass別で判定する（ブック内・単体を問わず効く）。
@@ -382,21 +383,31 @@ function local_h5plogger_before_footer() {
 
             // 外側iframe(iwin)の中にある最内iframe(h5p-iframe-N)を探して
             // クリック・動画リスナーを張る。
-            // 最内はxAPIより初期化が遅れることがあるためリトライで待つ。
+            //
+            // コンテンツタイプ別の構造：
+            //   CP/IB/IV(YouTube): embed.php → h5p-iframe-N(同オリジン) → 動画iframe(cross-origin)
+            //   IV(Vimeo):         embed.php に直接IVコンテンツ → Vimeo iframe(cross-origin)
+            //                      ※ h5p-iframe-Nが存在しない構成
+            //
+            // "全てcross-origin" と "同オリジンだがabout:blank(ロード中)" を区別し、
+            // 前者は即フォールバック、後者はリトライで待つ。
             function attachInner(outerWin, tries) {
                 tries = tries || 0;
                 var inner = null;
+                var hasUnreadyFrame = false; // 同オリジンだがabout:blank（まだロード中）
 
-                // ループ外でquerySelectorAllを試みる（outerWin自体がクロスオリジンの場合に備え）
                 var innerFrames = [];
                 try { innerFrames = outerWin.document.querySelectorAll('iframe'); } catch(e) {}
 
                 // iframe毎に個別にtry/catch（クロスオリジンiframeで全体が止まるのを防ぐ）
-                // about:blank は未ロード状態なのでスキップ（ナビゲート後に別windowになりリスナーが消える）
                 for (var i = 0; i < innerFrames.length; i++) {
                     try {
                         var w = innerFrames[i].contentWindow;
-                        if (w && w.document && w.location.href !== 'about:blank') { inner = w; break; }
+                        if (w && w.document && w.location.href !== 'about:blank') {
+                            inner = w; break;
+                        }
+                        // 同オリジンだがabout:blank → ロード待ち（cross-originはcatchへ）
+                        hasUnreadyFrame = true;
                     } catch(e) { /* クロスオリジン、スキップ */ }
                 }
 
@@ -405,13 +416,15 @@ function local_h5plogger_before_footer() {
                     attachVideoListener(inner);
                     return;
                 }
-                if (tries < 20) {
+                // 同オリジンiframeがabout:blankでロード中 → リトライ
+                if (hasUnreadyFrame && tries < 20) {
                     setTimeout(function () { attachInner(outerWin, tries + 1); }, 300);
-                } else {
-                    // 最終フォールバック：内側が見つからない構成（IVのYouTubeがクロスオリジン等）
-                    attachClickTo(outerWin);
-                    attachVideoListener(outerWin);
+                    return;
                 }
+                // 全てのiframeがcross-origin / iframeなし → コンテンツがouterWin直下の構成
+                // (Vimeo IV等) または20回待ってもabout:blank → フォールバック
+                attachClickTo(outerWin);
+                attachVideoListener(outerWin);
             }
 
             attachInner(iwin);
