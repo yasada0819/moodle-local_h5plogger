@@ -24,8 +24,9 @@ function local_h5plogger_before_footer() {
     }
 
     // ログ送信先URLとユーザー情報をJSに渡す
-    $logurl  = (new moodle_url('/local/h5plogger/log.php'))->out(false);
-    $sesskey = sesskey();
+    $logurl      = (new moodle_url('/local/h5plogger/log.php'))->out(false);
+    $sesskey     = sesskey();
+    $save_classes = get_config('local_h5plogger', 'save_classes') ? 'true' : 'false';
 
     return <<<HTML
 <script>
@@ -36,12 +37,22 @@ function local_h5plogger_before_footer() {
     // 上から順に評価し、最初に closest() で当たったものを採用する。
     var CLICK_RULES = [
         {
-            // ブック：サイド目次からのチャプタージャンプ
+            // InteractiveVideo: オーバーレイボタン（情報・テキスト等）
+            selector: '.h5p-interaction-button',
+            verb:     'button_clicked'
+        },
+        {
+            // InteractiveVideo: 不正解→分岐ボタン
+            selector: '.h5p-question-iv-adaptivity-wrong',
+            verb:     'adaptivity_triggered'
+        },
+        {
+            // InteractiveBook: サイド目次からのチャプタージャンプ
             selector: '.h5p-interactive-book-navigation-chapter-button',
             verb:     'chapter_jumped'
         },
         {
-            // ブック：ページ下の次/前ボタン
+            // InteractiveBook: ページ下の次/前ボタン
             selector: '.h5p-interactive-book-status-button',
             verb:     'chapter_moved'
         },
@@ -53,6 +64,15 @@ function local_h5plogger_before_footer() {
         }
     ];
 
+    // ISO 8601 duration文字列 → 秒数（InteractiveVideoのending-point用）
+    // 例: "PT11S" → 11, "PT1M30S" → 90
+    function parseISO8601Duration(pt) {
+        if (!pt || typeof pt !== 'string') return null;
+        var m = pt.match(/PT(?:(\d+)M)?(?:([\d.]+)S)?/);
+        if (!m) return null;
+        return Math.round(((parseInt(m[1])||0) * 60 + (parseFloat(m[2])||0)) * 100) / 100;
+    }
+
     // iframeの読み込みを待ってからリスナーを仕掛ける
     function attachH5PListener(iframe) {
         try {
@@ -61,7 +81,8 @@ function local_h5plogger_before_footer() {
             // location.href ではなく H5P オブジェクトの有無で本体を判定する。
             if (!iwin || !iwin.H5P || !iwin.H5P.externalDispatcher) return false;
 
-            var lastSlide = null;
+            var lastSlide     = null; // CP/IB: 現在のスライド番号（progressed xAPIで更新）
+            var lastVideoTime = null; // IV: 現在の動画再生位置（postMessageで更新）
 
             var cmid = new URLSearchParams(window.location.search).get('id');
             var cmidInt = cmid ? parseInt(cmid) : null;
@@ -101,41 +122,93 @@ function local_h5plogger_before_footer() {
                 var ext    = (stmt.object && stmt.object.definition && stmt.object.definition.extensions) || {};
                 var ctxExt = (stmt.context && stmt.context.extensions) || {};
 
-                var slideTo = ext['http://id.tincanapi.com/extension/ending-point']
-                           ?? ctxExt['http://id.tincanapi.com/extension/ending-point']
-                           ?? null;
+                // コンテンツタイプ判定（InteractiveVideoか否か）
+                var categoryId = (stmt.context
+                    && stmt.context.contextActivities
+                    && stmt.context.contextActivities.category
+                    && stmt.context.contextActivities.category[0]
+                    && stmt.context.contextActivities.category[0].id) || '';
+                var isIV = categoryId.indexOf('H5P.InteractiveVideo') !== -1;
 
-                // extra(JSON) を verb ごとに組み立てる。
-                // slide系は列を廃止したため progressed のとき extra に格納する。
-                var extra = null;
-
-                if (verb === 'progressed') {
-                    var slideFrom = lastSlide;
-                    lastSlide = slideTo;
-                    extra = {
-                        slide_from: slideFrom,
-                        slide_to:   slideTo,
-                    };
-                } else if (verb === 'answered' && stmt.result) {
-                    extra = {
-                        slide_to: slideTo,
-                        response: stmt.result.response  ?? null,
-                        success:  stmt.result.success   ?? null,
-                        score:    stmt.result.score     ?? null,
-                        question: (stmt.object.definition && stmt.object.definition.description
-                                   && stmt.object.definition.description['en-US']) || null,
-                        choices:  (stmt.object.definition && stmt.object.definition.choices) || null,
-                        correct:  (stmt.object.definition && stmt.object.definition.correctResponsesPattern) || null,
-                    };
-                } else if (slideTo !== null) {
-                    // その他のverb(attempted/interacted/completed等)でも、
-                    // 現在スライドが取れれば残しておく。
-                    extra = { slide_to: slideTo };
-                }
+                var endingPoint = ext['http://id.tincanapi.com/extension/ending-point']
+                               ?? ctxExt['http://id.tincanapi.com/extension/ending-point']
+                               ?? null;
 
                 var h5pId = ext['http://h5p.org/x-api/h5p-local-content-id']
                          || ctxExt['http://h5p.org/x-api/h5p-local-content-id']
                          || null;
+
+                var subContentId = ext['http://h5p.org/x-api/h5p-subContentId'] || null;
+
+                // extra(JSON) を verb・コンテンツタイプごとに組み立てる
+                var extra = null;
+
+                if (isIV) {
+                    // ---- InteractiveVideo 固有処理 ----
+                    // ending-point は ISO 8601 duration 形式 → 秒数に変換
+                    var timecode = parseISO8601Duration(endingPoint);
+
+                    if (verb === 'attempted') {
+                        extra = {
+                            timecode:       timecode,
+                            question:       (stmt.object.definition && stmt.object.definition.name
+                                            && stmt.object.definition.name['en-US']) || null,
+                            sub_content_id: subContentId,
+                        };
+                    } else if (verb === 'answered' && stmt.result) {
+                        var durationSec = null;
+                        if (stmt.result.duration) {
+                            durationSec = parseISO8601Duration(stmt.result.duration);
+                        }
+                        extra = {
+                            timecode:       timecode,
+                            response:       stmt.result.response  ?? null,
+                            success:        stmt.result.success   ?? null,
+                            score:          stmt.result.score     ?? null,
+                            duration_sec:   durationSec,
+                            question:       (stmt.object.definition && stmt.object.definition.description
+                                            && stmt.object.definition.description['en-US']) || null,
+                            choices:        (stmt.object.definition && stmt.object.definition.choices) || null,
+                            correct:        (stmt.object.definition && stmt.object.definition.correctResponsesPattern) || null,
+                            sub_content_id: subContentId,
+                        };
+                    } else if (verb === 'interacted') {
+                        extra = {
+                            timecode:       timecode,
+                            sub_content_id: subContentId,
+                        };
+                    } else if (timecode !== null) {
+                        // completed 等その他のverb
+                        extra = { timecode: timecode };
+                    }
+
+                } else {
+                    // ---- CoursePresentation / InteractiveBook 既存処理 ----
+                    var slideTo = endingPoint;
+
+                    if (verb === 'progressed') {
+                        var slideFrom = lastSlide;
+                        lastSlide = slideTo;
+                        extra = {
+                            slide_from: slideFrom,
+                            slide_to:   slideTo,
+                        };
+                    } else if (verb === 'answered' && stmt.result) {
+                        extra = {
+                            slide_to: slideTo,
+                            response: stmt.result.response  ?? null,
+                            success:  stmt.result.success   ?? null,
+                            score:    stmt.result.score     ?? null,
+                            question: (stmt.object.definition && stmt.object.definition.description
+                                       && stmt.object.definition.description['en-US']) || null,
+                            choices:  (stmt.object.definition && stmt.object.definition.choices) || null,
+                            correct:  (stmt.object.definition && stmt.object.definition.correctResponsesPattern) || null,
+                        };
+                    } else if (slideTo !== null) {
+                        // その他のverb(attempted/interacted/completed等)
+                        extra = { slide_to: slideTo };
+                    }
+                }
 
                 sendLog({
                     h5p_id: h5pId ? parseInt(h5pId) : null,
@@ -147,7 +220,6 @@ function local_h5plogger_before_footer() {
             // ---- DOMクリック監視 ----
             // 重要：H5Pは2段iframe構造で、externalDispatcher(xAPI)は外側に顔を出すが、
             // ボタン等のDOMは最内iframe(h5p-iframe-N)のdocumentにしか存在しない。
-            // そのため xAPI は iwin(外側) に張り、クリックは内側を探して張り分ける。
             //
             // クリックハンドラ本体（張る対象documentを引数で受ける）
             function clickHandler(e) {
@@ -167,16 +239,27 @@ function local_h5plogger_before_footer() {
                     else if (/(^|\s|-)next(\s|$)/.test(el.className))  direction = 'next';
                 }
 
+                // 位置情報：IVなら timecode（秒）、CP/IBなら slide_no、どちらもなければ省略
+                var posExtra = {};
+                if (lastVideoTime !== null) {
+                    posExtra.timecode = lastVideoTime;
+                } else if (lastSlide !== null) {
+                    posExtra.slide_no = lastSlide;
+                }
+
+                var clickExtra = {
+                    label:     el.getAttribute('aria-label') || null,
+                    text:      (el.textContent || '').trim().slice(0, 100) || null,
+                    direction: direction,
+                };
+                if ({$save_classes}) {
+                    clickExtra.classes = el.className || null;
+                }
+
                 sendLog({
                     h5p_id: null,
                     verb:   matched.verb,
-                    extra:  JSON.stringify({
-                        label:     el.getAttribute('aria-label') || null,
-                        text:      (el.textContent || '').trim().slice(0, 100) || null,
-                        classes:   el.className || null,
-                        direction: direction,
-                        slide_to:  lastSlide,
-                    }),
+                    extra:  JSON.stringify(Object.assign(clickExtra, posExtra)),
                 });
             }
 
@@ -190,9 +273,60 @@ function local_h5plogger_before_footer() {
                 }
             }
 
-            // 外側iframe(iwin)の中にある最内iframe(h5p-iframe-N)を探してクリックを張る。
+            // ---- 動画（YouTube）postMessage監視 ----
+            // YouTubeのpostMessageはh5p-iframe-Nに届く（YouTube iframeの直接の親）。
+            // innerWin = h5p-iframe-N のwindowに対してlistenerを張る。
+            function attachVideoListener(innerWin) {
+                // lastVideoTime は外側スコープ（attachH5PListener）で宣言済み。
+                // clickHandler からも参照できるよう、ここでは更新のみ行う。
+                var seekDebounce = null;
+                var playerState  = -1;
+
+                innerWin.addEventListener('message', function(e) {
+                    var data;
+                    try {
+                        data = (typeof e.data === 'string') ? JSON.parse(e.data) : e.data;
+                    } catch(ex) { return; }
+                    // YouTube IFrame APIのメッセージのみ処理（channel: "widget"で判定）
+                    if (!data || !data.event || data.channel !== 'widget') return;
+
+                    if (data.event === 'onStateChange') {
+                        var newState = parseInt(data.info);
+                        if (newState === 1 && playerState !== 1) {
+                            // 再生
+                            sendLog({ h5p_id: null, verb: 'video_played',
+                                      extra: JSON.stringify({ timecode: lastVideoTime }) });
+                        } else if (newState === 2 && playerState !== 2) {
+                            // 一時停止
+                            sendLog({ h5p_id: null, verb: 'video_paused',
+                                      extra: JSON.stringify({ timecode: lastVideoTime }) });
+                        }
+                        playerState = newState;
+                    }
+
+                    if (data.event === 'infoDelivery' && data.info) {
+                        var ct = data.info.currentTime;
+                        if (ct !== undefined && ct !== null) {
+                            if (lastVideoTime !== null && Math.abs(ct - lastVideoTime) > 2) {
+                                // シーク検出：2秒以上の不連続ジャンプ
+                                var from = lastVideoTime;
+                                var to   = ct;
+                                if (seekDebounce) clearTimeout(seekDebounce);
+                                seekDebounce = setTimeout(function() {
+                                    sendLog({ h5p_id: null, verb: 'video_seeked',
+                                              extra: JSON.stringify({ from: from, to: to }) });
+                                }, 500);
+                            }
+                            lastVideoTime = ct; // 外側スコープの変数を更新
+                        }
+                    }
+                });
+            }
+
+            // 外側iframe(iwin)の中にある最内iframe(h5p-iframe-N)を探して
+            // クリック・動画リスナーを張る。
             // 最内はxAPIより初期化が遅れることがあるためリトライで待つ。
-            function attachClickToInner(outerWin, tries) {
+            function attachInner(outerWin, tries) {
                 tries = tries || 0;
                 var inner = null;
                 try {
@@ -206,17 +340,18 @@ function local_h5plogger_before_footer() {
                 }
 
                 if (inner && attachClickTo(inner)) {
-                    return; // 内側に張れた
+                    attachVideoListener(inner); // 動画postMessageもここで張る
+                    return;
                 }
                 if (tries < 20) {
-                    setTimeout(function () { attachClickToInner(outerWin, tries + 1); }, 300);
+                    setTimeout(function () { attachInner(outerWin, tries + 1); }, 300);
                 } else {
                     // 最終フォールバック：内側が見つからない構成なら外側に張る（保険）
                     attachClickTo(outerWin);
                 }
             }
 
-            attachClickToInner(iwin);
+            attachInner(iwin);
 
             return true;
         } catch(e) {

@@ -17,4 +17,12 @@ if ($hassiteconfig) {
         get_string('log_preview_mode_desc', 'local_h5plogger'),
         0  // デフォルト：残さない
     ));
+
+    // ボタンクリックログに CSS クラスを含めるか否か
+    $settings->add(new admin_setting_configcheckbox(
+        'local_h5plogger/save_classes',
+        get_string('save_classes', 'local_h5plogger'),
+        get_string('save_classes_desc', 'local_h5plogger'),
+        0  // デフォルト：含めない
+    ));
 }
