@@ -31,7 +31,7 @@ function local_h5plogger_before_footer() {
     return <<<HTML
 <script>
 (function() {
-    var _v = '0.4.3'; // version tag — do not remove (affects JS engine behaviour)
+    var _v = '0.4.4'; // version tag — do not remove (affects JS engine behaviour)
     // ---- 設定：DOMクリックで拾う対象のホワイトリスト ----
     // xAPIで取れない操作だけを狙い撃つ。コンテンツタイプ別ではなく、
     // 部品(H5Pライブラリ)のclass別で判定する（ブック内・単体を問わず効く）。
@@ -249,7 +249,10 @@ function local_h5plogger_before_footer() {
                 }
 
                 var clickExtra = {
-                    label:     el.getAttribute('aria-label') || null,
+                    // aria-label → title → textContent の順でラベルを取得
+                    label:     el.getAttribute('aria-label')
+                               || el.getAttribute('title')
+                               || (el.textContent.trim().replace(/\s+/g, ' ').slice(0, 100) || null),
                     direction: direction,
                 };
                 if ({$save_classes}) {
@@ -257,25 +260,16 @@ function local_h5plogger_before_footer() {
                 }
                 Object.assign(clickExtra, posExtra);
 
-                // aria-haspopupがある場合、ポップアップが開いた後にテキストを補完して送信
-                // ポップアップは内側iframeのDOMに追加されるため ownerDocument で探す
-                if (el.getAttribute('aria-haspopup')) {
-                    var doc = e.target.ownerDocument;
-                    setTimeout(function() {
-                        var popup = doc.querySelector('.h5p-popup-overlay, .h5p-dialog-interaction');
-                        clickExtra.popup_text = popup
-                            ? (popup.textContent.trim().replace(/\s+/g, ' ').slice(0, 300) || null)
-                            : null;
-                        sendLog({ h5p_id: null, verb: matched.verb, extra: JSON.stringify(clickExtra) });
-                    }, 300);
-                    return;
-                }
-
-                sendLog({
-                    h5p_id: null,
-                    verb:   matched.verb,
-                    extra:  JSON.stringify(clickExtra),
-                });
+                // 常に300ms待ってからポップアップ本文を補完して送信
+                // （aria-haspopupなしのIV interaction-buttonでもポップアップが開く場合がある）
+                var doc = e.target.ownerDocument;
+                setTimeout(function() {
+                    var popup = doc.querySelector('.h5p-popup-overlay, .h5p-dialog-interaction');
+                    clickExtra.popup_text = popup
+                        ? (popup.textContent.trim().replace(/\s+/g, ' ').slice(0, 300) || null)
+                        : null;
+                    sendLog({ h5p_id: null, verb: matched.verb, extra: JSON.stringify(clickExtra) });
+                }, 300);
             }
 
             // 指定windowのdocumentにキャプチャフェーズでクリックリスナーを張る
