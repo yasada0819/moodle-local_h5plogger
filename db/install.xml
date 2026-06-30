@@ -7,8 +7,7 @@
         <FIELD NAME="userid"         TYPE="int"  LENGTH="10" NOTNULL="true"  COMMENT="Moodle user id"/>
         <FIELD NAME="cmid"           TYPE="int"  LENGTH="10" NOTNULL="false" COMMENT="Course module id (from URL ?id=)"/>
         <FIELD NAME="h5p_id"         TYPE="int"  LENGTH="10" NOTNULL="false" COMMENT="mdl_h5p.id (xAPI h5p-local-content-id)"/>
-        <FIELD NAME="h5pactivity_id" TYPE="int"  LENGTH="10" NOTNULL="false" COMMENT="mdl_h5pactivity.id"/>
-        <FIELD NAME="attempt_id"     TYPE="int"  LENGTH="10" NOTNULL="false" COMMENT="mdl_h5pactivity_attempts.id"/>
+        <FIELD NAME="attempt_id"     TYPE="int"  LENGTH="10" NOTNULL="false" COMMENT="mdl_h5pactivity_attempts.id (session boundary). h5pactivity_id is resolvable from cmid via course_modules.instance, so not stored."/>
         <FIELD NAME="verb"           TYPE="char" LENGTH="64" NOTNULL="true"  COMMENT="xAPI verb or DOM action (progressed/answered/button_clicked/chapter_jumped/chapter_moved etc)"/>
         <FIELD NAME="extra"          TYPE="text" NOTNULL="false"             COMMENT="JSON: verb-specific detail (slide_from/slide_to, answer, score, chapter label, direction, etc)"/>
         <FIELD NAME="timecreated"    TYPE="int"  LENGTH="10" NOTNULL="true"  COMMENT="Unix timestamp"/>

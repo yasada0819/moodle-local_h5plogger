@@ -64,12 +64,12 @@ if ($cmid) {
     }
 }
 
-// 保存
+// 保存（h5pactivity_id はDBに保存しない。cmid→course_modules.instanceで常に解決可能なため、
+// 記録時負荷の最小化を優先。上記の $h5pactivity_id は attempt_id 解決のためにのみ内部利用）
 $record = new stdClass();
 $record->userid         = $USER->id;
 $record->cmid           = $cmid;
 $record->h5p_id         = $h5p_id;
-$record->h5pactivity_id = $h5pactivity_id;
 $record->attempt_id     = $attempt_id;
 $record->verb           = $verb;
 $record->extra          = $extra;

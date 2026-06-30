@@ -40,5 +40,17 @@ function xmldb_local_h5plogger_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2026062301, 'local', 'h5plogger');
     }
 
+    if ($oldversion < 2026063000) {
+        $table = new xmldb_table('local_h5plogger_log');
+
+        // h5pactivity_id カラムを削除（cmid→course_modules.instanceで解決可能なため冗長）
+        $field = new xmldb_field('h5pactivity_id');
+        if ($dbman->field_exists($table, $field)) {
+            $dbman->drop_field($table, $field);
+        }
+
+        upgrade_plugin_savepoint(true, 2026063000, 'local', 'h5plogger');
+    }
+
     return true;
 }
