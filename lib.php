@@ -32,7 +32,7 @@ function local_h5plogger_before_footer() {
     return <<<HTML
 <script>
 (function() {
-    var _v = '0.4.7'; // version tag — do not remove (affects JS engine behaviour)
+    var _v = '0.4.8'; // version tag — do not remove (affects JS engine behaviour)
     // ---- 設定：DOMクリックで拾う対象のホワイトリスト ----
     // xAPIで取れない操作だけを狙い撃つ。コンテンツタイプ別ではなく、
     // 部品(H5Pライブラリ)のclass別で判定する（ブック内・単体を問わず効く）。
@@ -286,12 +286,68 @@ function local_h5plogger_before_footer() {
             // ---- 動画（YouTube / Vimeo）postMessage監視 ----
             // postMessageはh5p-iframe-Nに届く（動画iframeの直接の親）。
             // innerWin = h5p-iframe-N のwindowに対してlistenerを張る。
+            //
+            // 同一スライドに動画が複数embedされるケース（CPで動画を2個並べる等）に対応するため、
+            // DOM上のvideo iframeをあらかじめ列挙してレジストリを作り、
+            // postMessageの送信元(e.source)と突き合わせて「どの動画か」を特定する。
+            // - video_no      : DOM出現順の連番（1始まり）。常に付与
+            // - video_provider/video_id : iframeのsrc属性から抽出できた場合のみ付与
+            //   （src属性は親ドキュメントから読む分にはクロスオリジン制約を受けない）
+            function buildVideoRegistry(win) {
+                var registry = [];
+                var iframes;
+                try {
+                    iframes = win.document.querySelectorAll('iframe');
+                } catch(e) {
+                    return registry;
+                }
+                var no = 0;
+                for (var i = 0; i < iframes.length; i++) {
+                    var src = iframes[i].getAttribute('src') || '';
+                    var provider = null;
+                    var videoId  = null;
+
+                    if (/(^|\.)youtube(-nocookie)?\.com\//.test(src)) {
+                        provider = 'youtube';
+                        var ym = src.match(/\/embed\/([a-zA-Z0-9_-]{11})/);
+                        if (ym) videoId = ym[1];
+                    } else if (/player\.vimeo\.com\//.test(src)) {
+                        provider = 'vimeo';
+                        var vm = src.match(/\/video\/(\d+)/);
+                        if (vm) videoId = vm[1];
+                    }
+
+                    if (!provider) continue; // YouTube/Vimeo以外のiframeは対象外
+
+                    no++;
+                    registry.push({
+                        win:      iframes[i].contentWindow,
+                        provider: provider,
+                        videoId:  videoId,
+                        videoNo:  no,
+                    });
+                }
+                return registry;
+            }
+
             function attachVideoListener(innerWin) {
-                // lastVideoTime は外側スコープ（attachH5PListener）で宣言済み。
-                // clickHandler からも参照できるよう、ここでは更新のみ行う。
-                var seekDebounce = null;
-                var playerState  = -1; // YouTube: 1=playing, 2=paused
-                var vimeoState   = -1; // Vimeo:   1=playing, 2=paused
+                var videoRegistry = buildVideoRegistry(innerWin);
+
+                // 動画ごとの再生状態。レジストリの要素（マッチしない場合はe.source自体）をキーにして、
+                // 複数動画が同時に存在してもlastTime/playerState等が混線しないようにする。
+                var stateByVideo = new Map();
+                function getState(key) {
+                    if (!stateByVideo.has(key)) {
+                        stateByVideo.set(key, { lastTime: null, playerState: -1, vimeoState: -1, seekDebounce: null });
+                    }
+                    return stateByVideo.get(key);
+                }
+                function findEntry(source) {
+                    for (var i = 0; i < videoRegistry.length; i++) {
+                        if (videoRegistry[i].win === source) return videoRegistry[i];
+                    }
+                    return null;
+                }
 
                 innerWin.addEventListener('message', function(e) {
                     var data;
@@ -300,40 +356,56 @@ function local_h5plogger_before_footer() {
                     } catch(ex) { return; }
                     if (!data) return;
 
+                    var entry = findEntry(e.source);
+                    if (!entry) {
+                        // レジストリ構築時点でまだ描画されていなかった動画iframe向けの救済（1回だけ再スキャン）
+                        videoRegistry = buildVideoRegistry(innerWin);
+                        entry = findEntry(e.source);
+                    }
+                    var st = getState(entry || e.source); // 未マッチでもsource単位で状態は分離する
+
+                    function tagVideo(extra) {
+                        extra.video_no = entry ? entry.videoNo : null;
+                        if (entry && entry.provider) extra.video_provider = entry.provider;
+                        if (entry && entry.videoId)  extra.video_id = entry.videoId;
+                        return extra;
+                    }
+
                     // ── Vimeo Player API (origin: player.vimeo.com) ──────────────
                     if (e.origin === 'https://player.vimeo.com' && data.event) {
                         if (data.event === 'play') {
-                            if (vimeoState !== 1) {
-                                vimeoState = 1;
+                            if (st.vimeoState !== 1) {
+                                st.vimeoState = 1;
                                 // data.data.seconds があればそちらが正確
                                 var pt = (data.data && data.data.seconds !== undefined)
-                                         ? data.data.seconds : lastVideoTime;
-                                if (pt !== null) lastVideoTime = pt;
+                                         ? data.data.seconds : st.lastTime;
+                                if (pt !== null) { st.lastTime = pt; lastVideoTime = pt; }
                                 sendLog({ h5p_id: null, verb: 'video_played',
-                                          extra: JSON.stringify({ timecode: lastVideoTime }) });
+                                          extra: JSON.stringify(tagVideo({ timecode: st.lastTime })) });
                             }
                         } else if (data.event === 'pause') {
-                            if (vimeoState !== 2) {
-                                vimeoState = 2;
+                            if (st.vimeoState !== 2) {
+                                st.vimeoState = 2;
                                 var pt2 = (data.data && data.data.seconds !== undefined)
-                                          ? data.data.seconds : lastVideoTime;
-                                if (pt2 !== null) lastVideoTime = pt2;
+                                          ? data.data.seconds : st.lastTime;
+                                if (pt2 !== null) { st.lastTime = pt2; lastVideoTime = pt2; }
                                 sendLog({ h5p_id: null, verb: 'video_paused',
-                                          extra: JSON.stringify({ timecode: lastVideoTime }) });
+                                          extra: JSON.stringify(tagVideo({ timecode: st.lastTime })) });
                             }
                         } else if (data.event === 'timeupdate' && data.data) {
                             var vct = data.data.seconds;
                             if (vct !== undefined && vct !== null) {
-                                if (lastVideoTime !== null && Math.abs(vct - lastVideoTime) > 2) {
+                                if (st.lastTime !== null && Math.abs(vct - st.lastTime) > 2) {
                                     // シーク検出：2秒以上の不連続ジャンプ
-                                    var vfrom = lastVideoTime;
+                                    var vfrom = st.lastTime;
                                     var vto   = vct;
-                                    if (seekDebounce) clearTimeout(seekDebounce);
-                                    seekDebounce = setTimeout(function() {
+                                    if (st.seekDebounce) clearTimeout(st.seekDebounce);
+                                    st.seekDebounce = setTimeout(function() {
                                         sendLog({ h5p_id: null, verb: 'video_seeked',
-                                                  extra: JSON.stringify({ from: vfrom, to: vto }) });
+                                                  extra: JSON.stringify(tagVideo({ from: vfrom, to: vto })) });
                                     }, 500);
                                 }
+                                st.lastTime = vct;
                                 lastVideoTime = vct;
                             }
                         }
@@ -348,32 +420,33 @@ function local_h5plogger_before_footer() {
 
                     if (data.event === 'onStateChange') {
                         var newState = parseInt(data.info);
-                        if (newState === 1 && playerState !== 1) {
+                        if (newState === 1 && st.playerState !== 1) {
                             // 再生
                             sendLog({ h5p_id: null, verb: 'video_played',
-                                      extra: JSON.stringify({ timecode: lastVideoTime }) });
-                        } else if (newState === 2 && playerState !== 2) {
+                                      extra: JSON.stringify(tagVideo({ timecode: st.lastTime })) });
+                        } else if (newState === 2 && st.playerState !== 2) {
                             // 一時停止
                             sendLog({ h5p_id: null, verb: 'video_paused',
-                                      extra: JSON.stringify({ timecode: lastVideoTime }) });
+                                      extra: JSON.stringify(tagVideo({ timecode: st.lastTime })) });
                         }
-                        playerState = newState;
+                        st.playerState = newState;
                     }
 
                     if (data.event === 'infoDelivery' && data.info) {
                         var ct = data.info.currentTime;
                         if (ct !== undefined && ct !== null) {
-                            if (lastVideoTime !== null && Math.abs(ct - lastVideoTime) > 2) {
+                            if (st.lastTime !== null && Math.abs(ct - st.lastTime) > 2) {
                                 // シーク検出：2秒以上の不連続ジャンプ
-                                var from = lastVideoTime;
+                                var from = st.lastTime;
                                 var to   = ct;
-                                if (seekDebounce) clearTimeout(seekDebounce);
-                                seekDebounce = setTimeout(function() {
+                                if (st.seekDebounce) clearTimeout(st.seekDebounce);
+                                st.seekDebounce = setTimeout(function() {
                                     sendLog({ h5p_id: null, verb: 'video_seeked',
-                                              extra: JSON.stringify({ from: from, to: to }) });
+                                              extra: JSON.stringify(tagVideo({ from: from, to: to })) });
                                 }, 500);
                             }
-                            lastVideoTime = ct; // 外側スコープの変数を更新
+                            st.lastTime = ct;
+                            lastVideoTime = ct; // 外側スコープの変数を更新（clickHandlerのposExtra用）
                         }
                     }
                 });
