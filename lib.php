@@ -24,14 +24,15 @@ function local_h5plogger_before_footer() {
     }
 
     // ログ送信先URLとユーザー情報をJSに渡す
-    $logurl      = (new moodle_url('/local/h5plogger/log.php'))->out(false);
-    $sesskey     = sesskey();
+    // json_encode経由で埋め込むことで、JS文字列リテラルへの直接埋め込みより防御的にする
+    $logurl      = json_encode((new moodle_url('/local/h5plogger/log.php'))->out(false));
+    $sesskeyjs   = json_encode(sesskey());
     $save_classes = get_config('local_h5plogger', 'save_classes') ? 'true' : 'false';
 
     return <<<HTML
 <script>
 (function() {
-    var _v = '0.4.4'; // version tag — do not remove (affects JS engine behaviour)
+    var _v = '0.4.7'; // version tag — do not remove (affects JS engine behaviour)
     // ---- 設定：DOMクリックで拾う対象のホワイトリスト ----
     // xAPIで取れない操作だけを狙い撃つ。コンテンツタイプ別ではなく、
     // 部品(H5Pライブラリ)のclass別で判定する（ブック内・単体を問わず効く）。
@@ -90,10 +91,10 @@ function local_h5plogger_before_footer() {
 
             // ---- 共通の送信関数（sesskeyはPHP埋め込み値を使う。embed.php側のM.cfgに依存しない）----
             function sendLog(payload) {
-                payload.sesskey = '{$sesskey}';
+                payload.sesskey = {$sesskeyjs};
                 payload.cmid    = cmidInt;
                 try {
-                    iwin.fetch('{$logurl}', {
+                    iwin.fetch({$logurl}, {
                         method:  'POST',
                         headers: {'Content-Type': 'application/json'},
                         body:    JSON.stringify(payload),
@@ -102,7 +103,7 @@ function local_h5plogger_before_footer() {
                 } catch (e) {
                     // 最内iframeのfetchが使えない場合は親のfetchにフォールバック
                     try {
-                        window.fetch('{$logurl}', {
+                        window.fetch({$logurl}, {
                             method:  'POST',
                             headers: {'Content-Type': 'application/json'},
                             body:    JSON.stringify(payload),
@@ -340,7 +341,10 @@ function local_h5plogger_before_footer() {
                     }
 
                     // ── YouTube IFrame API (channel: 'widget') ───────────────────
-                    if (!data.event || data.channel !== 'widget') return;
+                    // origin検証：通常domain・privacy-enhanced domain(nocookie)の両方を許可
+                    var isYouTubeOrigin = (e.origin === 'https://www.youtube.com'
+                                          || e.origin === 'https://www.youtube-nocookie.com');
+                    if (!isYouTubeOrigin || !data.event || data.channel !== 'widget') return;
 
                     if (data.event === 'onStateChange') {
                         var newState = parseInt(data.info);

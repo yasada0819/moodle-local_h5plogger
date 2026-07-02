@@ -25,4 +25,13 @@ if ($hassiteconfig) {
         get_string('save_classes_desc', 'local_h5plogger'),
         0  // デフォルト：含めない
     ));
+
+    // ログの保持日数（0 = 無期限保持。scheduled taskが定期削除する）
+    $settings->add(new admin_setting_configtext(
+        'local_h5plogger/retention_days',
+        get_string('retention_days', 'local_h5plogger'),
+        get_string('retention_days_desc', 'local_h5plogger'),
+        0,
+        PARAM_INT
+    ));
 }
