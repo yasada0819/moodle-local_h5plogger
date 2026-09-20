@@ -100,21 +100,42 @@ xAPIイベントは**外側**のiframe層に伝播するのに対し、DOM要素
 
 ### 参照例：Configurable Reports
 
+H5Pアクティビティのあるコースに、SQLレポートを作成する。`%%COURSEID%%` はConfigurable Reportsがレポートを置いたコースのIDに置き換えるため、1つのレポートでそのコース内の全H5Pアクティビティの操作を一覧できる。
+
 ```sql
 SELECT
+  lg.id,
   lg.userid,
+  lg.cmid,
+  ha.name          AS activity_name,
+  lib.machinename  AS h5p_type,
+  lg.attempt_id,
   lg.verb,
-  cm.instance      AS h5pactivity_id,   -- course_modules経由で解決
-  lib.machinename  AS h5p_type,         -- 例：H5P.CoursePresentation
   lg.extra,
   lg.timecreated
 FROM {local_h5plogger_log} lg
-JOIN {course_modules} cm  ON cm.id = lg.cmid
-JOIN {h5p} h              ON h.id = lg.h5p_id
-JOIN {h5p_libraries} lib  ON lib.id = h.mainlibraryid
-WHERE lg.cmid = :cmid
-ORDER BY lg.userid, lg.timecreated
+JOIN {course_modules} cm      ON cm.id = lg.cmid
+JOIN {h5pactivity} ha         ON ha.id = cm.instance
+LEFT JOIN {h5p} h             ON h.id = lg.h5p_id
+LEFT JOIN {h5p_libraries} lib ON lib.id = h.mainlibraryid
+WHERE cm.course = %%COURSEID%%
+ORDER BY lg.cmid, lg.userid, lg.timecreated, lg.id
 ```
+
+このクエリについて：
+
+- `activity_name` は `course_modules.instance` 経由で解決する（ログテーブルには `h5pactivity_id` を保存していない）。`h5p_type` はH5Pのライブラリ名（例：`H5P.CoursePresentation`）。
+- `h5p_id` はクライアントからの申告値のため、欠落や不正な値が入りうる。`LEFT JOIN` にしているので、そのような行も残り、`h5p_type` だけが空になる。
+- `timecreated` は秒精度のため、同じ秒のイベントの順序を固定する目的で、最後のソートキーに `lg.id` を使っている。
+- 特定のアクティビティだけに絞る場合は、`WHERE` 句に `AND lg.cmid = <cmid>`（アクティビティURLの `?id=` の数字）を追加する。
+
+結果を使うときの注意：
+
+- **`extra` は信頼できない入力として扱う。** `label` や `popup_text` などの値は学習者のブラウザ由来。Configurable Reports以外の場所（自作ダッシュボード、Python/Rで生成したHTMLなど）で表示するときは、必ずエスケープする。
+- **教師・管理者の操作は、既定では記録されない。** 動作確認は学習者ロールのアカウントで行う（または *Log teacher/admin interactions* をONにする）。そうしないと、レポートが空に見える。
+- **このレポートは、個々の学習者の操作ログを表示する。** 閲覧できる人は、Configurable Reports側のレポートの権限設定で制限する。
+
+
 
 ---
 
