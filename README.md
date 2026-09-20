@@ -100,21 +100,42 @@ Table: `local_h5plogger_log`
 
 ### Example: Configurable Reports query
 
+Create an SQL report in the course that contains your H5P activities. Configurable Reports replaces `%%COURSEID%%` with the ID of the course where the report is placed, so a single report lists the interactions of every H5P activity in that course.
+
 ```sql
 SELECT
+  lg.id,
   lg.userid,
+  lg.cmid,
+  ha.name          AS activity_name,
+  lib.machinename  AS h5p_type,
+  lg.attempt_id,
   lg.verb,
-  cm.instance      AS h5pactivity_id,   -- resolved via course_modules
-  lib.machinename  AS h5p_type,         -- e.g. H5P.CoursePresentation
   lg.extra,
   lg.timecreated
 FROM {local_h5plogger_log} lg
-JOIN {course_modules} cm  ON cm.id = lg.cmid
-JOIN {h5p} h              ON h.id = lg.h5p_id
-JOIN {h5p_libraries} lib  ON lib.id = h.mainlibraryid
-WHERE lg.cmid = :cmid
-ORDER BY lg.userid, lg.timecreated
+JOIN {course_modules} cm      ON cm.id = lg.cmid
+JOIN {h5pactivity} ha         ON ha.id = cm.instance
+LEFT JOIN {h5p} h             ON h.id = lg.h5p_id
+LEFT JOIN {h5p_libraries} lib ON lib.id = h.mainlibraryid
+WHERE cm.course = %%COURSEID%%
+ORDER BY lg.cmid, lg.userid, lg.timecreated, lg.id
 ```
+
+Notes on this query:
+
+- `activity_name` is resolved via `course_modules.instance` (`h5pactivity_id` is not stored in the log table). `h5p_type` is the H5P library, e.g. `H5P.CoursePresentation`.
+- `h5p_id` is reported by the client, so it may be missing or invalid. The `LEFT JOIN`s keep those rows; `h5p_type` is simply empty for them.
+- `timecreated` has one-second resolution, so `lg.id` is used as the final sort key to keep the order of same-second events stable.
+- To restrict the report to one activity, append `AND lg.cmid = <cmid>` (the number in the activity URL `?id=`) to the `WHERE` clause.
+
+Notes on using the results:
+
+- **Treat `extra` as untrusted input.** Values such as `label` and `popup_text` originate in the learner's browser. Always escape them when you display them anywhere outside Configurable Reports (custom dashboards, HTML generated from Python/R, etc.).
+- **Teacher/admin interactions are not logged by default.** Test with a learner-role account (or enable *Log teacher/admin interactions*), otherwise the report will look empty.
+- **The report exposes individual learners' interaction logs.** Restrict who can view it with the report's permission settings in Configurable Reports.
+
+
 
 ---
 
