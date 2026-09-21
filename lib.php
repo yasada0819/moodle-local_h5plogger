@@ -32,37 +32,44 @@ function local_h5plogger_before_footer() {
     return <<<HTML
 <script>
 (function() {
-    var _v = '0.4.8'; // version tag — do not remove (affects JS engine behaviour)
+    var _v = '0.4.9'; // version tag — do not remove (affects JS engine behaviour)
     // ---- 設定：DOMクリックで拾う対象のホワイトリスト ----
     // xAPIで取れない操作だけを狙い撃つ。コンテンツタイプ別ではなく、
     // 部品(H5Pライブラリ)のclass別で判定する（ブック内・単体を問わず効く）。
     // 上から順に評価し、最初に closest() で当たったものを採用する。
+    // withTimecode: true のルールだけ、動画の再生位置(timecode)も extra に付ける。
+    //   （slide_no は lastSlide が取れていれば全ルール共通で付ける）
     var CLICK_RULES = [
         {
             // InteractiveVideo: オーバーレイボタン（情報・テキスト等）
             selector: '.h5p-interaction-button',
-            verb:     'button_clicked'
+            verb:     'button_clicked',
+            withTimecode: true
         },
         {
             // InteractiveVideo: 不正解→分岐ボタン
             selector: '.h5p-question-iv-adaptivity-wrong',
-            verb:     'adaptivity_triggered'
+            verb:     'adaptivity_triggered',
+            withTimecode: true
         },
         {
             // InteractiveBook: サイド目次からのチャプタージャンプ
             selector: '.h5p-interactive-book-navigation-chapter-button',
-            verb:     'chapter_jumped'
+            verb:     'chapter_jumped',
+            withTimecode: false
         },
         {
             // InteractiveBook: ページ下の次/前ボタン
             selector: '.h5p-interactive-book-status-button',
-            verb:     'chapter_moved'
+            verb:     'chapter_moved',
+            withTimecode: false
         },
         {
             // 汎用：インフォメーションボタン等の H5P element button
             // （h5p-advancedtext-button などは h5p-element-button を含む）
             selector: '[class*="h5p-element-button"]',
-            verb:     'button_clicked'
+            verb:     'button_clicked',
+            withTimecode: false
         }
     ];
 
@@ -241,12 +248,18 @@ function local_h5plogger_before_footer() {
                     else if (/(^|\s|-)next(\s|$)/.test(el.className))  direction = 'next';
                 }
 
-                // 位置情報：IVなら timecode（秒）、CP/IBなら slide_no、どちらもなければ省略
+                // 位置情報：
+                //  - slide_no : lastSlide が取れていれば常に付ける（どのスライドか＝文脈）
+                //  - timecode : 動画に関するルール(withTimecode)のときだけ付ける
+                // ※v0.4.8までは「lastVideoTime があれば timecode、なければ slide_no」の排他だった。
+                //   lastVideoTime は一度動画が動くと null に戻らないため、CPで動画を再生した後は
+                //   ボタンクリックに slide_no が入らなくなっていた（v0.4.9で修正）。
                 var posExtra = {};
-                if (lastVideoTime !== null) {
-                    posExtra.timecode = lastVideoTime;
-                } else if (lastSlide !== null) {
+                if (lastSlide !== null) {
                     posExtra.slide_no = lastSlide;
+                }
+                if (matched.withTimecode && lastVideoTime !== null) {
+                    posExtra.timecode = lastVideoTime;
                 }
 
                 var clickExtra = {
@@ -365,6 +378,8 @@ function local_h5plogger_before_footer() {
                     var st = getState(entry || e.source); // 未マッチでもsource単位で状態は分離する
 
                     function tagVideo(extra) {
+                        // どのスライドの動画か（CP等で lastSlide が取れているときだけ）
+                        if (lastSlide !== null) extra.slide_no = lastSlide;
                         extra.video_no = entry ? entry.videoNo : null;
                         if (entry && entry.provider) extra.video_provider = entry.provider;
                         if (entry && entry.videoId)  extra.video_id = entry.videoId;
