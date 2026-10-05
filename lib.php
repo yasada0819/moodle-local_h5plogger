@@ -32,7 +32,7 @@ function local_h5plogger_before_footer() {
     return <<<HTML
 <script>
 (function() {
-    var _v = '0.5.0.1'; // version tag — do not remove (affects JS engine behaviour)
+    var _v = '0.5.0.2'; // version tag — do not remove (affects JS engine behaviour)
     // ---- 設定：DOMクリックで拾う対象のホワイトリスト ----
     // xAPIで取れない操作だけを狙い撃つ。コンテンツタイプ別ではなく、
     // 部品(H5Pライブラリ)のclass別で判定する（ブック内・単体を問わず効く）。
@@ -128,6 +128,31 @@ function local_h5plogger_before_footer() {
         } catch (e) {
             return null;
         }
+    }
+
+    // Virtual Tour: 360 シーンの視点角度 {yaw, pitch}（ラジアン）を返す。360 シーン以外・取得失敗時は null
+    //  - threeSixty.getCurrentPosition() はライブラリ内部の関数（公開APIではない）。
+    //    バージョンアップで消えても他のログに影響しないよう、存在チェックと try/catch で囲む。
+    //  - 静止画シーンでも直前の 360 の値が返るため、.h5p-three-sixty-controls の有無で 360 シーンかを判定する。
+    //  - yaw は正規化されず回した分だけ積み上がる。記録はそのまま、正規化は分析時に行う。
+    function getViewPos(win) {
+        try {
+            if (!win.document.querySelector('.h5p-three-image .h5p-three-sixty-controls')) return null;
+            var insts = (win.H5P && win.H5P.instances) || [];
+            for (var i = 0; i < insts.length; i++) {
+                var ts = insts[i] && insts[i].threeSixty;
+                if (ts && typeof ts.getCurrentPosition === 'function') {
+                    var p = ts.getCurrentPosition();
+                    if (p && typeof p.yaw === 'number' && typeof p.pitch === 'number') {
+                        return {
+                            yaw:   Math.round(p.yaw * 10000) / 10000,
+                            pitch: Math.round(p.pitch * 10000) / 10000
+                        };
+                    }
+                }
+            }
+        } catch (e) { /* サイレント */ }
+        return null;
     }
 
     // ISO 8601 duration文字列 → 秒数（InteractiveVideoのending-point用）
@@ -323,6 +348,11 @@ function local_h5plogger_before_footer() {
                 if (scene !== null) {
                     posExtra.scene = scene;
                 }
+                // Virtual Tour: 360 シーンなら、クリック時点の視点角度も付ける（どこを向いて押したか）
+                var view = getViewPos(e.target.ownerDocument.defaultView);
+                if (view !== null) {
+                    posExtra.view = view;
+                }
 
                 var clickExtra = {
                     // aria-label → title → textContent の順でラベルを取得
@@ -356,6 +386,52 @@ function local_h5plogger_before_footer() {
             function attachClickTo(targetWin) {
                 try {
                     targetWin.document.addEventListener('click', clickHandler, true);
+                    return true;
+                } catch (e) {
+                    return false;
+                }
+            }
+
+            // ---- Virtual Tour: 視点の回転（ドラッグ）監視 ----
+            // ドラッグ1回ごとに、pointerdown 時点の角度(from)と pointerup 時点の角度(to)を記録する。
+            //  - 途中の見回しは取らない（pointermove の積算は負荷とステートフル化に見合わないため）
+            //  - 最初の指(isPrimary)だけを追う。2本目以降の指は無視して距離計算が混ざらないようにする
+            //  - 新しい primary の pointerdown で状態を上書きする。iframe の外で離して pointerup が
+            //    届かなかった場合に、「ドラッグ中」が残り続けるのを防ぐため
+            //  - pointercancel（ブラウザがジェスチャを引き取った場合）は捨てる
+            //  - ボタン上の操作はクリックとして別に記録されるので除外する
+            var VIEW_DRAG_MIN_PX = 10; // これ未満の移動はクリック扱い（記録しない）
+            function attachViewRotationTo(targetWin) {
+                var drag = null; // {id, x, y, from, scene}
+                try {
+                    var vdoc = targetWin.document;
+                    vdoc.addEventListener('pointerdown', function(e) {
+                        if (!e.isPrimary) return; // 2本目以降の指は無視
+                        drag = null;
+                        var t = e.target;
+                        if (!t || !t.closest || !t.closest('.h5p-three-image')) return;
+                        if (t.closest('button, .nav-button-wrapper, .hud-btn, [role="dialog"]')) return;
+                        var from = getViewPos(targetWin);
+                        if (from === null) return; // 360 シーン以外
+                        drag = { id: e.pointerId, x: e.clientX, y: e.clientY, from: from, scene: getScene(vdoc) };
+                    }, true);
+                    vdoc.addEventListener('pointerup', function(e) {
+                        if (!drag || e.pointerId !== drag.id) return;
+                        var d = drag;
+                        drag = null;
+                        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < VIEW_DRAG_MIN_PX) return;
+                        var to = getViewPos(targetWin);
+                        if (to === null) return;
+                        sendLog({ h5p_id: null, verb: 'view_rotated', extra: JSON.stringify({
+                            scene:        d.scene,
+                            from:         d.from,
+                            to:           to,
+                            pointer_type: e.pointerType || null
+                        }) });
+                    }, true);
+                    vdoc.addEventListener('pointercancel', function(e) {
+                        if (drag && e.pointerId === drag.id) drag = null;
+                    }, true);
                     return true;
                 } catch (e) {
                     return false;
@@ -565,6 +641,7 @@ function local_h5plogger_before_footer() {
 
                 if (inner) {
                     attachClickTo(inner);
+                    attachViewRotationTo(inner);
                     attachVideoListener(inner);
                     return;
                 }
@@ -576,6 +653,7 @@ function local_h5plogger_before_footer() {
                 // 全てのiframeがcross-origin / iframeなし → コンテンツがouterWin直下の構成
                 // (Vimeo IV等) または20回待ってもabout:blank → フォールバック
                 attachClickTo(outerWin);
+                attachViewRotationTo(outerWin);
                 attachVideoListener(outerWin);
             }
 
