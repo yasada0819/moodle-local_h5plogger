@@ -32,7 +32,7 @@ function local_h5plogger_before_footer() {
     return <<<HTML
 <script>
 (function() {
-    var _v = '0.5.0'; // version tag — do not remove (affects JS engine behaviour)
+    var _v = '0.5.0.1'; // version tag — do not remove (affects JS engine behaviour)
     // ---- 設定：DOMクリックで拾う対象のホワイトリスト ----
     // xAPIで取れない操作だけを狙い撃つ。コンテンツタイプ別ではなく、
     // 部品(H5Pライブラリ)のclass別で判定する（ブック内・単体を問わず効く）。
@@ -45,35 +45,42 @@ function local_h5plogger_before_footer() {
         // 情報ホットスポットのラッパーにも h5p-interaction-button が付いており、
         // 下に置くと IV 用ルールに横取りされて label が null になる（v0.4.9 までの挙動）。
         // aria-label はラッパーではなくボタン本体(.nav-button)にあるため、本体を指定する。
+        // 本体の class はどれも nav-button で種類が分からないため、kind を extra に入れる。
+        // （classes は save_classes 設定しだいで保存されないので、判別に使わない）
         {
             // 情報ホットスポット（ダイアログが開く）
             selector: '.h5p-three-image .h5p-info-button .nav-button',
             verb:     'button_clicked',
-            withTimecode: false
+            withTimecode: false,
+            kind:     'info'
         },
         {
             // シーン移動（label = 行き先のシーン名）
             selector: '.h5p-three-image .h5p-go-to-scene-button .nav-button',
             verb:     'button_clicked',
-            withTimecode: false
+            withTimecode: false,
+            kind:     'go_to_scene'
         },
         {
             // 戻る（label = "Back"。行き先は次イベントの scene で分析時に補う）
             selector: '.h5p-three-image .h5p-go-back-button .nav-button',
             verb:     'button_clicked',
-            withTimecode: false
+            withTimecode: false,
+            kind:     'go_back'
         },
         {
             // ダイアログを閉じる
             selector: '.h5p-three-image .close-button-wrapper',
             verb:     'button_clicked',
-            withTimecode: false
+            withTimecode: false,
+            kind:     'close'
         },
         {
             // HUD ボタン（Reset Camera 等）
             selector: '.h5p-three-image .hud-btn',
             verb:     'button_clicked',
-            withTimecode: false
+            withTimecode: false,
+            kind:     'hud'
         },
         {
             // InteractiveVideo: オーバーレイボタン（情報・テキスト等）
@@ -324,6 +331,9 @@ function local_h5plogger_before_footer() {
                                || (el.textContent.trim().replace(/\s+/g, ' ').slice(0, 100) || null),
                     direction: direction,
                 };
+                if (matched.kind) {
+                    clickExtra.kind = matched.kind;
+                }
                 if ({$save_classes}) {
                     clickExtra.classes = el.className || null;
                 }
