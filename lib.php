@@ -32,7 +32,7 @@ function local_h5plogger_before_footer() {
     return <<<HTML
 <script>
 (function() {
-    var _v = '0.4.9'; // version tag — do not remove (affects JS engine behaviour)
+    var _v = '0.5.0'; // version tag — do not remove (affects JS engine behaviour)
     // ---- 設定：DOMクリックで拾う対象のホワイトリスト ----
     // xAPIで取れない操作だけを狙い撃つ。コンテンツタイプ別ではなく、
     // 部品(H5Pライブラリ)のclass別で判定する（ブック内・単体を問わず効く）。
@@ -40,6 +40,41 @@ function local_h5plogger_before_footer() {
     // withTimecode: true のルールだけ、動画の再生位置(timecode)も extra に付ける。
     //   （slide_no は lastSlide が取れていれば全ルール共通で付ける）
     var CLICK_RULES = [
+        // ---- Virtual Tour (H5P.ThreeImage) ----
+        // 必ず IV 用ルール(.h5p-interaction-button)より上に置く。
+        // 情報ホットスポットのラッパーにも h5p-interaction-button が付いており、
+        // 下に置くと IV 用ルールに横取りされて label が null になる（v0.4.9 までの挙動）。
+        // aria-label はラッパーではなくボタン本体(.nav-button)にあるため、本体を指定する。
+        {
+            // 情報ホットスポット（ダイアログが開く）
+            selector: '.h5p-three-image .h5p-info-button .nav-button',
+            verb:     'button_clicked',
+            withTimecode: false
+        },
+        {
+            // シーン移動（label = 行き先のシーン名）
+            selector: '.h5p-three-image .h5p-go-to-scene-button .nav-button',
+            verb:     'button_clicked',
+            withTimecode: false
+        },
+        {
+            // 戻る（label = "Back"。行き先は次イベントの scene で分析時に補う）
+            selector: '.h5p-three-image .h5p-go-back-button .nav-button',
+            verb:     'button_clicked',
+            withTimecode: false
+        },
+        {
+            // ダイアログを閉じる
+            selector: '.h5p-three-image .close-button-wrapper',
+            verb:     'button_clicked',
+            withTimecode: false
+        },
+        {
+            // HUD ボタン（Reset Camera 等）
+            selector: '.h5p-three-image .hud-btn',
+            verb:     'button_clicked',
+            withTimecode: false
+        },
         {
             // InteractiveVideo: オーバーレイボタン（情報・テキスト等）
             selector: '.h5p-interaction-button',
@@ -72,6 +107,21 @@ function local_h5plogger_before_footer() {
             withTimecode: false
         }
     ];
+
+    // Virtual Tour: 現在のシーン名を返す（Virtual Tour 以外では null）
+    //  - 360 シーン : .h5p-three-sixty-controls の aria-label（シーン切替で更新される）
+    //  - 静止画シーン: .image-scene の alt
+    // 360 を先に見るのは、360 シーンで古い .image-scene が残っていた場合の保険。
+    function getScene(doc) {
+        try {
+            var c = doc.querySelector('.h5p-three-image .h5p-three-sixty-controls');
+            if (c) return c.getAttribute('aria-label') || null;
+            var img = doc.querySelector('.h5p-three-image .image-scene');
+            return img ? (img.getAttribute('alt') || null) : null;
+        } catch (e) {
+            return null;
+        }
+    }
 
     // ISO 8601 duration文字列 → 秒数（InteractiveVideoのending-point用）
     // 例: "PT11S" → 11, "PT1M30S" → 90
@@ -261,6 +311,11 @@ function local_h5plogger_before_footer() {
                 if (matched.withTimecode && lastVideoTime !== null) {
                     posExtra.timecode = lastVideoTime;
                 }
+                // Virtual Tour: クリック時点のシーン（＝移動元）。遷移前に同期的に読む
+                var scene = getScene(e.target.ownerDocument);
+                if (scene !== null) {
+                    posExtra.scene = scene;
+                }
 
                 var clickExtra = {
                     // aria-label → title → textContent の順でラベルを取得
@@ -278,7 +333,8 @@ function local_h5plogger_before_footer() {
                 // （aria-haspopupなしのIV interaction-buttonでもポップアップが開く場合がある）
                 var doc = e.target.ownerDocument;
                 setTimeout(function() {
-                    var popup = doc.querySelector('.h5p-popup-overlay, .h5p-dialog-interaction');
+                    // .h5p-text-overlay は Virtual Tour の情報ダイアログ（閉じるとDOMから消える）
+                    var popup = doc.querySelector('.h5p-popup-overlay, .h5p-dialog-interaction, .h5p-text-overlay');
                     clickExtra.popup_text = popup
                         ? (popup.textContent.trim().replace(/\s+/g, ' ').slice(0, 300) || null)
                         : null;
