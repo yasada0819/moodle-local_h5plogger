@@ -30,7 +30,7 @@ jobs:
 
       - name: Setup Moodle
         run: |
-          moodle-plugin-ci install --plugin plugin --branch ${{ matrix.moodle-branch }}
+          moodle-plugin-ci install --plugin plugin --branch ${{ matrix.moodle-branch }} --no-init
 
       - name: CodeChecker (Coding Style & Deprecated APIs)
         run: moodle-plugin-ci codechecker plugin
