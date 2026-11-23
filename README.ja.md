@@ -97,6 +97,9 @@ xAPIイベントは**外側**のiframe層に伝播するのに対し、DOM要素
 | `video_played` | postMessage | `timecode`, `video_no`, `video_provider`＊, `video_id`＊ |
 | `video_paused` | postMessage | `timecode`, `video_no`, `video_provider`＊, `video_id`＊ |
 | `video_seeked` | postMessage | `from`, `to`, `video_no`, `video_provider`＊, `video_id`＊ |
+| `view_rotated` | DOM (Virtual Tour) | `scene`, `from`, `to`, `pointer_type` |
+
+Virtual Tour（`H5P.ThreeImage`）のホットスポット・HUDボタンのクリックは `button_clicked` として記録し、`kind`（`info` / `go_to_scene` / `go_back` / `close` / `hud`）、`scene`（今いるシーン）、360シーンでは `view`（クリック時点の `yaw` / `pitch`、ラジアン）を付ける。`yaw` は正規化していない。
 
 BS（Branching Scenario）内のイベントには、今いるブランチを示す `bs_node`（-1=開始画面、数値=ノードID、`end`=終了画面）が全verb共通で付く。CP等の xAPI 由来のイベントには、statement にあれば `sub_content_id` も付く。
 
