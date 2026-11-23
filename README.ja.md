@@ -84,10 +84,12 @@ xAPIイベントは**外側**のiframe層に伝播するのに対し、DOM要素
 | verb | 発生元 | 主な `extra` フィールド |
 |---|---|---|
 | `progressed` | xAPI (CP/IB) | `slide_from`, `slide_to` |
+| `progressed` | xAPI (BS) | `node_from`, `node_to` |
 | `answered` | xAPI | `response`, `success`, `score`, `question`, `choices`, `correct` |
 | `attempted` | xAPI (IV) | `timecode`, `question`, `sub_content_id` |
 | `interacted` | xAPI (IV) | `timecode`, `sub_content_id` |
 | `completed` | xAPI | `timecode` または `slide_to` |
+| `completed` | xAPI (BS) | `path`, `end_node`, `end_alt`, `is_default_end`, `end_title`, `end_subtitle`, `end_image`, `show_score`, `score`, `duration`, `duration_sec` |
 | `button_clicked` | DOM | `label`, `direction`, `timecode`/`slide_no`, `popup_text` |
 | `adaptivity_triggered` | DOM | `label`, `timecode` |
 | `chapter_jumped` | DOM | `label`, `direction`, `slide_no` |
@@ -95,6 +97,8 @@ xAPIイベントは**外側**のiframe層に伝播するのに対し、DOM要素
 | `video_played` | postMessage | `timecode`, `video_no`, `video_provider`＊, `video_id`＊ |
 | `video_paused` | postMessage | `timecode`, `video_no`, `video_provider`＊, `video_id`＊ |
 | `video_seeked` | postMessage | `from`, `to`, `video_no`, `video_provider`＊, `video_id`＊ |
+
+BS（Branching Scenario）内のイベントには、今いるブランチを示す `bs_node`（-1=開始画面、数値=ノードID、`end`=終了画面）が全verb共通で付く。CP等の xAPI 由来のイベントには、statement にあれば `sub_content_id` も付く。
 
 ＊ `video_provider`/`video_id` は動画iframeの `src` 属性から抽出できた場合のみ付与される。`video_no`（DOM出現順の連番、1始まり）は常に付与され、同一スライドに動画が複数embedされているケースでも識別できる。
 

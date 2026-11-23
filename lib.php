@@ -32,7 +32,7 @@ function local_h5plogger_before_footer() {
     return <<<HTML
 <script>
 (function() {
-    var _v = '0.4.9'; // version tag — do not remove (affects JS engine behaviour)
+    var _v = '0.5.1'; // version tag — do not remove (affects JS engine behaviour)
     // ---- 設定：DOMクリックで拾う対象のホワイトリスト ----
     // xAPIで取れない操作だけを狙い撃つ。コンテンツタイプ別ではなく、
     // 部品(H5Pライブラリ)のclass別で判定する（ブック内・単体を問わず効く）。
@@ -93,6 +93,122 @@ function local_h5plogger_before_footer() {
             var lastSlide     = null; // CP/IB: 現在のスライド番号（progressed xAPIで更新）
             var lastVideoTime = null; // IV: 現在の動画再生位置（postMessageで更新）
 
+            // ---- BranchingScenario（BS）対応（v0.5.0）----
+            // BSのxAPI statementにはノード情報が一切載らないため、イベントのたびに
+            // BSインスタンスの状態（currentId / userPath）を直接読む。
+            //   currentId : 現在のノード。-1 は開始画面（まだどのノードにも入っていない）
+            //   userPath  : 最終的に辿った経路。End到達時は末尾に -1 が足される。
+            //               attempt（やり直し）ごとにリセットされ、中断→再開では復元される
+            // ※ currentId は End 到達後も最後のノードのまま変わらないので、
+            //   End かどうかは userPath の末尾で判定する。
+            var bsInst     = null;      // 見つかったBSインスタンス（キャッシュ）
+            var lastBsNode = undefined; // 直前に観測した bs_node（ブランチ切り替え検出用）
+            var bsPending  = 0;         // BSの遷移待ち中の数（v0.5.1）
+            // ※ 遷移の直後（currentId が更新されるまでの約300ms）に、次のノードの中身が
+            //   attempted 等を出すことがある。そのまま読むと1つ前のノードが付いてしまうので、
+            //   遷移待ちの間に来たxAPIイベントは、遷移が確定してから処理する。
+
+            // BSインスタンスを探す（embed.php層と、その中の h5p-iframe-N 層の両方）
+            function findBS() {
+                if (bsInst) return bsInst;
+                var wins = [iwin];
+                try {
+                    var fr = iwin.document.querySelectorAll('iframe');
+                    for (var i = 0; i < fr.length; i++) {
+                        try {
+                            if (fr[i].contentWindow && fr[i].contentWindow.H5P) wins.push(fr[i].contentWindow);
+                        } catch (e) { /* クロスオリジン、スキップ */ }
+                    }
+                } catch (e) {}
+                for (var j = 0; j < wins.length; j++) {
+                    var list = (wins[j].H5P && wins[j].H5P.instances) || [];
+                    for (var k = 0; k < list.length; k++) {
+                        var x = list[k];
+                        if (x && x.libraryInfo && x.libraryInfo.machineName === 'H5P.BranchingScenario') {
+                            bsInst = x;
+                            return x;
+                        }
+                    }
+                }
+                return null;
+            }
+
+            // 今いるブランチ：-1=開始画面 / 'end'=終了画面 / 数値=ノードID / null=BSではない
+            function currentBsNode() {
+                var inst = findBS();
+                if (!inst) return null;
+                var p = inst.userPath || [];
+                if (p.length && p[p.length - 1] === -1) return 'end';
+                return (typeof inst.currentId === 'number') ? inst.currentId : null;
+            }
+
+            // bs_node を取得し、ブランチが変わっていたら lastSlide をリセットする
+            // （前のブランチのCPのスライド番号を、次のブランチに引き継がないため）
+            function syncBsNode() {
+                var n = currentBsNode();
+                if (n !== null && n !== lastBsNode) {
+                    if (lastBsNode !== undefined) lastSlide = null;
+                    lastBsNode = n;
+                }
+                return n;
+            }
+
+            // 条件が満たされるまで100ms間隔で待つ（上限1秒）。満たされなくても上限で実行する
+            // BSは遷移の300msほど後に状態が更新されるため、固定待ちではなく状態変化を待つ
+            function waitBs(cond, cb) {
+                var waited = 0;
+                (function poll() {
+                    var ok = false;
+                    try { ok = cond(); } catch (e) {}
+                    if (ok || waited >= 1000) { cb(); return; }
+                    waited += 100;
+                    setTimeout(poll, 100);
+                })();
+            }
+
+            // 終了画面のタイトル等（HTML付き）をプレーンテキストにする。
+            // DOMParserを使うので、スクリプト実行や画像読み込みは起きない
+            function stripHtml(html) {
+                if (!html || typeof html !== 'string') return null;
+                try {
+                    var d = new DOMParser().parseFromString(html, 'text/html');
+                    var t = (d.body.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 200);
+                    return t || null;
+                } catch (e) {
+                    return null;
+                }
+            }
+
+            // BS内のイベントなら extra に bs_node を付ける（BSでなければ何もしない）
+            function tagBs(extra, node) {
+                if (node !== null && node !== undefined) extra.bs_node = node;
+                return extra;
+            }
+
+            // End に入るときに選んだ分岐質問の選択肢 index（v0.5.1）
+            // 同じノードからデフォルトEnd・カスタムEndの両方に行ける場合があり、
+            // end_node だけでは End を特定できないため。
+            // 分岐質問の alternatives のうち End に向かう（nextContentId が -1）ものから、
+            // 終了画面のタイトルと一致するものを探す。1つに絞れないときは null。
+            function findEndAlt(inst, endNode, isDefault, endTitle, endSubtitle) {
+                try {
+                    var node = inst.params.content[endNode];
+                    var lib = (node && node.type && node.type.library) || '';
+                    if (lib.indexOf('H5P.BranchingQuestion') !== 0) return null;
+                    var alts = (node.type.params.branchingQuestion || {}).alternatives || [];
+                    var hits = [];
+                    for (var i = 0; i < alts.length; i++) {
+                        if (parseInt(alts[i].nextContentId) !== -1) continue;
+                        var fb = alts[i].feedback || {};
+                        var t = stripHtml(fb.title), s = stripHtml(fb.subtitle);
+                        if (isDefault ? (!t && !s) : (t === endTitle && s === endSubtitle)) hits.push(i);
+                    }
+                    return (hits.length === 1) ? hits[0] : null;
+                } catch (e) {
+                    return null;
+                }
+            }
+
             var cmid = new URLSearchParams(window.location.search).get('id');
             var cmidInt = cmid ? parseInt(cmid) : null;
 
@@ -121,7 +237,7 @@ function local_h5plogger_before_footer() {
             }
 
             // ---- xAPIイベント監視 ----
-            iwin.H5P.externalDispatcher.on('xAPI', function(event) {
+            function onXAPI(event, deferred) {
                 var stmt = event.data.statement;
                 if (!stmt || !stmt.verb) return;
 
@@ -138,6 +254,14 @@ function local_h5plogger_before_footer() {
                     && stmt.context.contextActivities.category[0]
                     && stmt.context.contextActivities.category[0].id) || '';
                 var isIV = categoryId.indexOf('H5P.InteractiveVideo') !== -1;
+                var isBS = categoryId.indexOf('H5P.BranchingScenario') !== -1;
+
+                // BSの遷移待ち中に来た中身のイベントは、遷移が確定してから処理する（v0.5.1）
+                // （deferred=true の再実行では待たない。上限1秒で必ず処理される）
+                if (!isBS && !deferred && bsPending > 0) {
+                    waitBs(function() { return bsPending === 0; }, function() { onXAPI(event, true); });
+                    return;
+                }
 
                 var endingPoint = ext['http://id.tincanapi.com/extension/ending-point']
                                ?? ctxExt['http://id.tincanapi.com/extension/ending-point']
@@ -148,6 +272,82 @@ function local_h5plogger_before_footer() {
                          || null;
 
                 var subContentId = ext['http://h5p.org/x-api/h5p-subContentId'] || null;
+
+                var h5pIdInt = h5pId ? parseInt(h5pId) : null;
+
+                // ---- BranchingScenario 本体のイベント（v0.5.0）----
+                // statementにノード情報がないので、インスタンスの状態を読んで extra を作る。
+                // lastSlide は触らない（BSのノード番号とCPのスライド番号を混ぜないため）
+                if (isBS) {
+                    var inst = findBS();
+                    if (verb === 'progressed' && inst) {
+                        // 即時に読む currentId = 出発ノード（-1は開始画面）
+                        // userPath が伸びるのを待ってから末尾を読む = 到着ノード（-1→'end'）
+                        var nodeFrom = (typeof inst.currentId === 'number') ? inst.currentId : null;
+                        var startLen = (inst.userPath || []).length;
+                        bsPending++;
+                        waitBs(function() { return (inst.userPath || []).length !== startLen; }, function() {
+                            bsPending = Math.max(0, bsPending - 1);
+                            var p = inst.userPath || [];
+                            var last = p.length ? p[p.length - 1] : null;
+                            var bsExtra = {
+                                node_from: nodeFrom,
+                                node_to:   (last === -1) ? 'end' : last,
+                            };
+                            syncBsNode();
+                            sendLog({ h5p_id: h5pIdInt, verb: verb, extra: JSON.stringify(bsExtra) });
+                        });
+                        return;
+                    }
+                    if (verb === 'completed' && inst) {
+                        // completed は終了画面の表示より先に来て、その時点では userPath に
+                        // -1 がまだ足されていない。末尾が -1 になるのを待ってから読む
+                        waitBs(function() {
+                            var p = inst.userPath || [];
+                            return p.length && p[p.length - 1] === -1;
+                        }, function() {
+                            var p = (inst.userPath || []).slice();
+                            var nodes = p.filter(function(n) { return n !== -1; });
+                            var es = inst.currentEndScreen || null;
+                            var sd = (es && es.screenData) || {};
+                            var img = (sd.image && sd.image.path) ? String(sd.image.path).split('/').pop() : null;
+                            var r = stmt.result || {};
+                            var endNode   = nodes.length ? nodes[nodes.length - 1] : null;
+                            var isDefault = es ? (es === (inst.endScreens && inst.endScreens[-1])) : null;
+                            var endTitle  = stripHtml(sd.titleText);
+                            var endSub    = stripHtml(sd.subtitleText);
+                            var bsExtra = {
+                                path:           p,
+                                end_node:       endNode,
+                                end_alt:        (endNode !== null && isDefault !== null)
+                                                ? findEndAlt(inst, endNode, isDefault, endTitle, endSub) : null,
+                                is_default_end: isDefault,
+                                end_title:      endTitle,
+                                end_subtitle:   endSub,
+                                end_image:      img,
+                                show_score:     (typeof sd.showScore === 'boolean') ? sd.showScore : null,
+                                score:          r.score ?? null,
+                                duration:       r.duration ?? null,
+                                duration_sec:   parseISO8601Duration(r.duration),
+                            };
+                            syncBsNode();
+                            sendLog({ h5p_id: h5pIdInt, verb: verb, extra: JSON.stringify(bsExtra) });
+                        });
+                        return;
+                    }
+                    // その他のBSのverb（またはインスタンスが見つからない場合）
+                    var bsNode = syncBsNode();
+                    sendLog({
+                        h5p_id: h5pIdInt,
+                        verb:   verb,
+                        extra:  (bsNode !== null) ? JSON.stringify({ bs_node: bsNode }) : null,
+                    });
+                    return;
+                }
+
+                // BSの中のコンテンツ（CP等）なら、今いるブランチを付ける。
+                // ブランチが変わっていればここで lastSlide がリセットされる
+                var curBsNode = syncBsNode();
 
                 // extra(JSON) を verb・コンテンツタイプごとに組み立てる
                 var extra = null;
@@ -217,14 +417,26 @@ function local_h5plogger_before_footer() {
                         // その他のverb(attempted/interacted/completed等)
                         extra = { slide_to: slideTo };
                     }
+
+                    // サブコンテンツID（v0.5.0）：CP内の設問や、BSの各ノードのCPを
+                    // 安定して特定するキー。statementにあるときだけ付ける
+                    if (subContentId) {
+                        extra = extra || {};
+                        extra.sub_content_id = subContentId;
+                    }
+                }
+
+                if (curBsNode !== null) {
+                    extra = tagBs(extra || {}, curBsNode);
                 }
 
                 sendLog({
-                    h5p_id: h5pId ? parseInt(h5pId) : null,
+                    h5p_id: h5pIdInt,
                     verb:   verb,
                     extra:  extra ? JSON.stringify(extra) : null,
                 });
-            });
+            }
+            iwin.H5P.externalDispatcher.on('xAPI', function(event) { onXAPI(event, false); });
 
             // ---- DOMクリック監視 ----
             // 重要：H5Pは2段iframe構造で、externalDispatcher(xAPI)は外側に顔を出すが、
@@ -255,6 +467,8 @@ function local_h5plogger_before_footer() {
                 //   lastVideoTime は一度動画が動くと null に戻らないため、CPで動画を再生した後は
                 //   ボタンクリックに slide_no が入らなくなっていた（v0.4.9で修正）。
                 var posExtra = {};
+                // BS内なら今いるブランチ（ブランチが変わっていれば lastSlide はここでリセット）
+                tagBs(posExtra, syncBsNode());
                 if (lastSlide !== null) {
                     posExtra.slide_no = lastSlide;
                 }
@@ -378,6 +592,8 @@ function local_h5plogger_before_footer() {
                     var st = getState(entry || e.source); // 未マッチでもsource単位で状態は分離する
 
                     function tagVideo(extra) {
+                        // どのブランチの動画か（BS内のときだけ）
+                        tagBs(extra, syncBsNode());
                         // どのスライドの動画か（CP等で lastSlide が取れているときだけ）
                         if (lastSlide !== null) extra.slide_no = lastSlide;
                         extra.video_no = entry ? entry.videoNo : null;

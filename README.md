@@ -84,10 +84,12 @@ Table: `local_h5plogger_log`
 | Verb | Source | Main `extra` fields |
 |---|---|---|
 | `progressed` | xAPI (CP/IB) | `slide_from`, `slide_to` |
+| `progressed` | xAPI (BS) | `node_from`, `node_to` |
 | `answered` | xAPI | `response`, `success`, `score`, `question`, `choices`, `correct` |
 | `attempted` | xAPI (IV) | `timecode`, `question`, `sub_content_id` |
 | `interacted` | xAPI (IV) | `timecode`, `sub_content_id` |
 | `completed` | xAPI | `timecode` or `slide_to` |
+| `completed` | xAPI (BS) | `path`, `end_node`, `end_alt`, `is_default_end`, `end_title`, `end_subtitle`, `end_image`, `show_score`, `score`, `duration`, `duration_sec` |
 | `button_clicked` | DOM | `label`, `direction`, `timecode`/`slide_no`, `popup_text` |
 | `adaptivity_triggered` | DOM | `label`, `timecode` |
 | `chapter_jumped` | DOM | `label`, `direction`, `slide_no` |
@@ -95,6 +97,8 @@ Table: `local_h5plogger_log`
 | `video_played` | postMessage | `timecode`, `video_no`, `video_provider`\*, `video_id`\* |
 | `video_paused` | postMessage | `timecode`, `video_no`, `video_provider`\*, `video_id`\* |
 | `video_seeked` | postMessage | `from`, `to`, `video_no`, `video_provider`\*, `video_id`\* |
+
+Events inside a Branching Scenario (BS) also carry `bs_node` on every verb: the branch the learner is in (-1 = start screen, a number = node ID, `end` = end screen). xAPI events from CP and other content also carry `sub_content_id` when the statement has one.
 
 \* `video_provider`/`video_id` are only present when they can be extracted from the video iframe's `src` attribute. `video_no` (a 1-based index in DOM order) is always present, and lets you distinguish multiple videos embedded on the same slide.
 
