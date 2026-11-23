@@ -97,6 +97,9 @@ Table: `local_h5plogger_log`
 | `video_played` | postMessage | `timecode`, `video_no`, `video_provider`\*, `video_id`\* |
 | `video_paused` | postMessage | `timecode`, `video_no`, `video_provider`\*, `video_id`\* |
 | `video_seeked` | postMessage | `from`, `to`, `video_no`, `video_provider`\*, `video_id`\* |
+| `view_rotated` | DOM (Virtual Tour) | `scene`, `from`, `to`, `pointer_type` |
+
+Virtual Tour (`H5P.ThreeImage`) clicks on hotspots and HUD buttons are recorded as `button_clicked` with `kind` (`info` / `go_to_scene` / `go_back` / `close` / `hud`), `scene` (the scene the learner is in), and, in 360 scenes, `view` (`yaw` / `pitch` in radians at the moment of the click). `yaw` is not normalised.
 
 Events inside a Branching Scenario (BS) also carry `bs_node` on every verb: the branch the learner is in (-1 = start screen, a number = node ID, `end` = end screen). xAPI events from CP and other content also carry `sub_content_id` when the statement has one.
 

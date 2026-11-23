@@ -4,11 +4,13 @@ require_once(__DIR__ . '/../../config.php');
 require_login();
 
 // verbホワイトリスト（サーバー側の入口検問所その1）。
-// 既知12種に固定。未知のverbやDBカラム長(char(64))溢れをここで弾く。
+// 既知13種に固定。未知のverbやDBカラム長(char(64))溢れをここで弾く。
+// ※ verb を足すときは lib.php 側（CLICK_RULES / 各 sendLog）と必ず揃えること。
 const H5PLOGGER_ALLOWED_VERBS = [
     'progressed', 'answered', 'attempted', 'interacted', 'completed',
     'button_clicked', 'adaptivity_triggered', 'chapter_jumped', 'chapter_moved',
     'video_played', 'video_paused', 'video_seeked',
+    'view_rotated', // v0.6.0: Virtual Tour の 360 シーンでの視点回転
 ];
 
 // extra(JSON)のサイズ上限（バイト）。超過分は行ごと拒否せず、extraのみ破棄して記録は残す
