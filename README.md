@@ -89,7 +89,7 @@ Table: `local_h5plogger_log`
 | `attempted` | xAPI (IV) | `timecode`, `question`, `sub_content_id` |
 | `interacted` | xAPI (IV) | `timecode`, `sub_content_id` |
 | `completed` | xAPI | `timecode` or `slide_to` |
-| `completed` | xAPI (BS) | `path`, `end_node`, `is_default_end`, `end_title`, `end_subtitle`, `end_image`, `show_score`, `score`, `duration`, `duration_sec` |
+| `completed` | xAPI (BS) | `path`, `end_node`, `end_alt`, `is_default_end`, `end_title`, `end_subtitle`, `end_image`, `show_score`, `score`, `duration`, `duration_sec` |
 | `button_clicked` | DOM | `label`, `direction`, `timecode`/`slide_no`, `popup_text` |
 | `adaptivity_triggered` | DOM | `label`, `timecode` |
 | `chapter_jumped` | DOM | `label`, `direction`, `slide_no` |

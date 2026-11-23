@@ -32,7 +32,7 @@ function local_h5plogger_before_footer() {
     return <<<HTML
 <script>
 (function() {
-    var _v = '0.5.0'; // version tag — do not remove (affects JS engine behaviour)
+    var _v = '0.5.1'; // version tag — do not remove (affects JS engine behaviour)
     // ---- 設定：DOMクリックで拾う対象のホワイトリスト ----
     // xAPIで取れない操作だけを狙い撃つ。コンテンツタイプ別ではなく、
     // 部品(H5Pライブラリ)のclass別で判定する（ブック内・単体を問わず効く）。
@@ -103,6 +103,10 @@ function local_h5plogger_before_footer() {
             //   End かどうかは userPath の末尾で判定する。
             var bsInst     = null;      // 見つかったBSインスタンス（キャッシュ）
             var lastBsNode = undefined; // 直前に観測した bs_node（ブランチ切り替え検出用）
+            var bsPending  = 0;         // BSの遷移待ち中の数（v0.5.1）
+            // ※ 遷移の直後（currentId が更新されるまでの約300ms）に、次のノードの中身が
+            //   attempted 等を出すことがある。そのまま読むと1つ前のノードが付いてしまうので、
+            //   遷移待ちの間に来たxAPIイベントは、遷移が確定してから処理する。
 
             // BSインスタンスを探す（embed.php層と、その中の h5p-iframe-N 層の両方）
             function findBS() {
@@ -181,6 +185,30 @@ function local_h5plogger_before_footer() {
                 return extra;
             }
 
+            // End に入るときに選んだ分岐質問の選択肢 index（v0.5.1）
+            // 同じノードからデフォルトEnd・カスタムEndの両方に行ける場合があり、
+            // end_node だけでは End を特定できないため。
+            // 分岐質問の alternatives のうち End に向かう（nextContentId が -1）ものから、
+            // 終了画面のタイトルと一致するものを探す。1つに絞れないときは null。
+            function findEndAlt(inst, endNode, isDefault, endTitle, endSubtitle) {
+                try {
+                    var node = inst.params.content[endNode];
+                    var lib = (node && node.type && node.type.library) || '';
+                    if (lib.indexOf('H5P.BranchingQuestion') !== 0) return null;
+                    var alts = (node.type.params.branchingQuestion || {}).alternatives || [];
+                    var hits = [];
+                    for (var i = 0; i < alts.length; i++) {
+                        if (parseInt(alts[i].nextContentId) !== -1) continue;
+                        var fb = alts[i].feedback || {};
+                        var t = stripHtml(fb.title), s = stripHtml(fb.subtitle);
+                        if (isDefault ? (!t && !s) : (t === endTitle && s === endSubtitle)) hits.push(i);
+                    }
+                    return (hits.length === 1) ? hits[0] : null;
+                } catch (e) {
+                    return null;
+                }
+            }
+
             var cmid = new URLSearchParams(window.location.search).get('id');
             var cmidInt = cmid ? parseInt(cmid) : null;
 
@@ -209,7 +237,7 @@ function local_h5plogger_before_footer() {
             }
 
             // ---- xAPIイベント監視 ----
-            iwin.H5P.externalDispatcher.on('xAPI', function(event) {
+            function onXAPI(event, deferred) {
                 var stmt = event.data.statement;
                 if (!stmt || !stmt.verb) return;
 
@@ -227,6 +255,13 @@ function local_h5plogger_before_footer() {
                     && stmt.context.contextActivities.category[0].id) || '';
                 var isIV = categoryId.indexOf('H5P.InteractiveVideo') !== -1;
                 var isBS = categoryId.indexOf('H5P.BranchingScenario') !== -1;
+
+                // BSの遷移待ち中に来た中身のイベントは、遷移が確定してから処理する（v0.5.1）
+                // （deferred=true の再実行では待たない。上限1秒で必ず処理される）
+                if (!isBS && !deferred && bsPending > 0) {
+                    waitBs(function() { return bsPending === 0; }, function() { onXAPI(event, true); });
+                    return;
+                }
 
                 var endingPoint = ext['http://id.tincanapi.com/extension/ending-point']
                                ?? ctxExt['http://id.tincanapi.com/extension/ending-point']
@@ -250,7 +285,9 @@ function local_h5plogger_before_footer() {
                         // userPath が伸びるのを待ってから末尾を読む = 到着ノード（-1→'end'）
                         var nodeFrom = (typeof inst.currentId === 'number') ? inst.currentId : null;
                         var startLen = (inst.userPath || []).length;
+                        bsPending++;
                         waitBs(function() { return (inst.userPath || []).length !== startLen; }, function() {
+                            bsPending = Math.max(0, bsPending - 1);
                             var p = inst.userPath || [];
                             var last = p.length ? p[p.length - 1] : null;
                             var bsExtra = {
@@ -275,12 +312,18 @@ function local_h5plogger_before_footer() {
                             var sd = (es && es.screenData) || {};
                             var img = (sd.image && sd.image.path) ? String(sd.image.path).split('/').pop() : null;
                             var r = stmt.result || {};
+                            var endNode   = nodes.length ? nodes[nodes.length - 1] : null;
+                            var isDefault = es ? (es === (inst.endScreens && inst.endScreens[-1])) : null;
+                            var endTitle  = stripHtml(sd.titleText);
+                            var endSub    = stripHtml(sd.subtitleText);
                             var bsExtra = {
                                 path:           p,
-                                end_node:       nodes.length ? nodes[nodes.length - 1] : null,
-                                is_default_end: es ? (es === (inst.endScreens && inst.endScreens[-1])) : null,
-                                end_title:      stripHtml(sd.titleText),
-                                end_subtitle:   stripHtml(sd.subtitleText),
+                                end_node:       endNode,
+                                end_alt:        (endNode !== null && isDefault !== null)
+                                                ? findEndAlt(inst, endNode, isDefault, endTitle, endSub) : null,
+                                is_default_end: isDefault,
+                                end_title:      endTitle,
+                                end_subtitle:   endSub,
                                 end_image:      img,
                                 show_score:     (typeof sd.showScore === 'boolean') ? sd.showScore : null,
                                 score:          r.score ?? null,
@@ -392,7 +435,8 @@ function local_h5plogger_before_footer() {
                     verb:   verb,
                     extra:  extra ? JSON.stringify(extra) : null,
                 });
-            });
+            }
+            iwin.H5P.externalDispatcher.on('xAPI', function(event) { onXAPI(event, false); });
 
             // ---- DOMクリック監視 ----
             // 重要：H5Pは2段iframe構造で、externalDispatcher(xAPI)は外側に顔を出すが、
